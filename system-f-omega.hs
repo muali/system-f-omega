@@ -72,3 +72,75 @@ kindify te@(t1 :-> t2) ctx = let tKind1 = kindify t1 ctx
                                                       (_, Right err)   -> extendKindError err te
                                                       (_, _)           -> Right $ "Arror type kind mismatch in " ++ (show te)
 
+
+findFreeName :: [(TypeVar, TypeVar)] -> [(TypeVar, TypeVar)] -> Type -> Type -> TypeVar
+findFreeName ctx1 ctx2 type1 type2 = helper "X" where
+    helper name | isFreeCtx ctx1 name && isFreeCtx ctx2 name && isFreeType type1 name && isFreeType type2 name = name
+                | otherwise = helper $ name ++ "X"
+    
+    isFreeCtx ctx name = let found = find (\(v1, v2) -> v1 == name || v2 == name) ctx in
+                         case found of Just _  -> False
+                                       Nothing -> True
+
+    isFreeType t name = case t of TVar v            -> v /= name
+                                  t1 :-> t2         -> isFreeType t1 name && isFreeType t2 name
+                                  TTAbs  (v1, _) t1 -> v1 /= name && isFreeType t1 name
+                                  Forall (v1, _) t1 -> v1 /= name && isFreeType t1 name
+                                  Exists (v1, _) t1 -> v1 /= name && isFreeType t1 name
+                                  t1 ::@ t2         -> isFreeType t1 name && isFreeType t2 name
+
+substTypeVar :: [(TypeVar, TypeVar)] -> TypeVar -> TypeVar
+substTypeVar [] v = v
+substTypeVar ((v1, v2):xs) v3 | v1 == v3  = v2
+                              | otherwise = substTypeVar xs v3
+
+substTypeAbs :: TypeVar -> Type -> Type -> Type
+substTypeAbs v1 t1@(TVar v2) t2 | v1 == v2  = t2
+                                | otherwise = t1
+
+substTypeAbs v1 (t1' :-> t2') t2 = (substTypeAbs v1 t1' t2) :-> (substTypeAbs v1 t2' t2)
+
+substTypeAbs v1 t1@(TTAbs (v2, k) t1') t2 | v1 == v2  = t1
+                                          | otherwise = TTAbs (v2, k) (substTypeAbs v1 t1' t2)
+
+substTypeAbs v1 t1@(Forall (v2, k) t1') t2 | v1 == v2  = t1
+                                           | otherwise = Forall (v2, k) (substTypeAbs v1 t1' t2)
+
+substTypeAbs v1 t1@(Exists (v2, k) t1') t2 | v1 == v2 = t1
+                                           | otherwise = Exists (v2, k) (substTypeAbs v1 t1' t2)
+
+substTypeAbs v1 (t1' ::@ t2') t2 = (substTypeAbs v1 t1' t2) ::@ (substTypeAbs v1 t2' t2)
+
+
+instance Eq Type where
+    (==) = helper [] [] where
+
+        helper ctx1 ctx2 (TVar v1) (TVar v2) = let v1' = substTypeVar ctx1 v1
+                                                   v2' = substTypeVar ctx2 v2 in
+                                                v1 == v2
+        
+        helper ctx1 ctx2 (t1 :-> t2) (t3 :-> t4) = helper ctx1 ctx2 t1 t3 && helper ctx1 ctx2 t2 t4
+        
+        helper ctx1 ctx2 (TTAbs (v1, k1) t1) (TTAbs (v2, k2) t2) | k1 /= k2 = False
+                                                                 | v1 == v2 = helper ctx1 ctx2 t1 t2
+                                                                 | otherwise = helper ([(v1, findFreeName ctx1 ctx2 t1 t2)] ++ ctx1)
+                                                                                      ([(v2, findFreeName ctx1 ctx2 t1 t2)] ++ ctx2)
+                                                                                      t1 t2
+        
+        helper ctx1 ctx2 (Forall (v1, k1) t1) (Forall (v2, k2) t2) | k1 /= k2 = False
+                                                                   | v1 == v2 = helper ctx1 ctx2 t1 t2
+                                                                   | otherwise = helper ([(v1, findFreeName ctx1 ctx2 t1 t2)] ++ ctx1)
+                                                                                        ([(v2, findFreeName ctx1 ctx2 t1 t2)] ++ ctx2)
+                                                                                        t1 t2                                       
+
+        helper ctx1 ctx2 (Exists (v1, k1) t1) (Exists (v2, k2) t2) | k1 /= k2 = False
+                                                                   | v1 == v2 = helper ctx1 ctx2 t1 t2
+                                                                   | otherwise = helper ([(v1, findFreeName ctx1 ctx2 t1 t2)] ++ ctx1)
+                                                                                        ([(v2, findFreeName ctx1 ctx2 t1 t2)] ++ ctx2)
+                                                                                        t1 t2
+
+        helper ctx1 ctx2 (t1 ::@ t2) (t3 ::@ t4) = helper ctx1 ctx2 t1 t3 && helper ctx1 ctx2 t2 t4
+
+        helper ctx1 ctx2 (TTAbs (v, K) t1 ::@ t2) t3 = helper ctx1 ctx2 (substTypeAbs v t1 t2) t3
+        helper ctx1 ctx2 t1 (TTAbs (v, K) t2 ::@ t3) = helper ctx1 ctx2 t1 (substTypeAbs v t2 t3)
+        helper _ _ _ _ = False
