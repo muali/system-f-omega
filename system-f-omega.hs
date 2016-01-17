@@ -29,6 +29,8 @@ data Expr = EVar ExprVar
           | TAbs (TypeVar, Kind) Expr
           | Expr :@ Expr
           | Expr :* Type
+          | Pack (Type, Expr) Type
+          | UnPack (TypeVar, ExprVar) Expr Expr
           deriving (Show)
 
 data ContextItem = TypeA TypeVar Kind
@@ -144,3 +146,64 @@ instance Eq Type where
         helper ctx1 ctx2 (TTAbs (v, K) t1 ::@ t2) t3 = helper ctx1 ctx2 (substTypeAbs v t1 t2) t3
         helper ctx1 ctx2 t1 (TTAbs (v, K) t2 ::@ t3) = helper ctx1 ctx2 t1 (substTypeAbs v t2 t3)
         helper _ _ _ _ = False
+
+
+typeFromCtx :: Context -> ExprVar -> Maybe Type
+typeFromCtx ctx x =
+    let helper (TypeA _ _) = False
+        helper (ExprA v t) = v == x in
+    let item = find helper ctx in
+        case item of Just (ExprA _ t) -> Just t
+                     Nothing          -> Nothing
+
+extendErrorType :: String -> Expr -> Either Type String
+extendErrorType err e = Right $ err ++ "\n\t in" ++ (show e)
+
+typeCheck :: Expr -> Context -> Either Type String
+typeCheck (EVar v) ctx = let t = typeFromCtx ctx v in
+                             case t of Just t' -> Left t'
+                                       Nothing -> Right $ "Unknown variable: " ++ v
+
+typeCheck e@(Abs (v, t) e1) ctx = let k = kindify t ctx in
+                                    case k of Right err -> extendErrorType err e
+                                              Left K -> typeCheck e1 $ ctx ++ [ExprA v t]
+
+typeCheck e@(e1 :@ e2) ctx = let t1 = typeCheck e1 ctx
+                                 t2 = typeCheck e2 ctx in
+                              case (t1, t2) of (Left (t1' :-> t2'), Left t3') -> if t1' == t3' then Left t2'
+                                                                              else Right $ "Invalid application: " ++ (show e)
+                                               (Left _, Left _)               -> Right $ "Invalid application: " ++ (show e)
+                                               (Right err, _)                 -> extendErrorType err e
+                                               (_, Right err)                 -> extendErrorType err e
+
+typeCheck e@(TAbs (tv, k) e1) ctx = let t = typeCheck e1 $ ctx ++ [TypeA tv k] in
+                                        case t of Left t' -> Left $ Forall (tv, k) t'
+                                                  Right err -> extendErrorType err e
+
+
+
+typeCheck e@(e1 :* t1) ctx =  let t = typeCheck e1 ctx 
+                                  k = kindify t1 ctx in
+                                case (t, k) of (Left (Forall (tv, k1) t2), Left k2) -> if k1 == k2 then Left $ substTypeAbs tv t2 t1
+                                                                                       else Right $ "Invalid type application: " ++ (show e)
+                                               (Left _, Left _)                     -> Right $ "Invalid type application: " ++ (show e)
+                                               (Right err, _)                       -> extendErrorType err e
+                                               (_, Right err)                       -> extendErrorType err e
+
+typeCheck e@(Pack (t1, e1) t@(Exists (tv2, k) t2)) ctx = let t1' = typeCheck e1 ctx
+                                                             t2' = substTypeAbs tv2 t2 t1
+                                                             k'  = kindify t ctx in
+                                                         case (t1', t2', k') of (Left t1'', t2'', Left K) -> if t1'' == t2'' then Left t
+                                                                                                              else Right $ "Invalid pack: " ++ (show e)
+                                                                                (Left _, _, Left _) -> Right $ "Invalid pack: " ++ (show e)
+                                                                                (Right err, _, _) -> extendErrorType err e
+                                                                                (_, _, Right err) -> extendErrorType err e
+
+typeCheck e@(Pack _ _) _ = Right $ "Invalid pack: " ++ (show e)
+
+typeCheck e@(UnPack (tv, ev) e1 e2) ctx = let t1 = typeCheck e1 ctx in
+                                            case t1 of (Left (Exists (tv', k) t1')) -> typeCheck e2 $ ctx ++ [TypeA tv k, ExprA ev t1']
+                                                       (Left _) -> Right $ "Invalid unpack: " ++ (show e)
+                                                       (Right err) -> extendErrorType err e
+
+
