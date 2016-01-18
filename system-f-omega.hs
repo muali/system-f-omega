@@ -74,6 +74,17 @@ kindify te@(t1 :-> t2) ctx = let tKind1 = kindify t1 ctx
                                                       (_, Right err)   -> extendKindError err te
                                                       (_, _)           -> Right $ "Arror type kind mismatch in " ++ (show te)
 
+kindify te@(Forall (tv, k) t) ctx = let kind = kindify t (ctx ++ [TypeA tv k]) in
+                                        case kind of (Left K) -> Left K
+                                                     (Left _) -> Right $ "Forall kind mismatch in " ++ (show te)
+                                                     (Right err) -> extendKindError err te
+
+kindify te@(Exists (tv, k) t) ctx = let kind = kindify t (ctx ++ [TypeA tv k]) in
+                                        case kind of (Left K) -> Left K
+                                                     (Left _) -> Right $ "Exists kind mismatch in " ++ (show te)
+                                                     (Right err) -> extendKindError err te
+
+
 
 findFreeName :: [(TypeVar, TypeVar)] -> [(TypeVar, TypeVar)] -> Type -> Type -> TypeVar
 findFreeName ctx1 ctx2 type1 type2 = helper "X" where
@@ -164,9 +175,12 @@ typeCheck (EVar v) ctx = let t = typeFromCtx ctx v in
                              case t of Just t' -> Left t'
                                        Nothing -> Right $ "Unknown variable: " ++ v
 
-typeCheck e@(Abs (v, t) e1) ctx = let k = kindify t ctx in
-                                    case k of Right err -> extendErrorType err e
-                                              Left K -> typeCheck e1 $ ctx ++ [ExprA v t]
+typeCheck e@(Abs (v, t) e1) ctx = let k = kindify t ctx 
+                                      t' = typeCheck e1 $ ctx ++ [ExprA v t] in
+                                    case (k, t') of (Right err, _) -> extendErrorType err e
+                                                    (_, Right err) -> extendErrorType err e
+                                                    (Left K, Left t'') -> Left $ t :-> t''
+                                                    (Left _, _) -> Right $ "Invalid abstraction: " ++ (show e)
 
 typeCheck e@(e1 :@ e2) ctx = let t1 = typeCheck e1 ctx
                                  t2 = typeCheck e2 ctx in
@@ -207,3 +221,24 @@ typeCheck e@(UnPack (tv, ev) e1 e2) ctx = let t1 = typeCheck e1 ctx in
                                                        (Right err) -> extendErrorType err e
 
 
+auto = TTAbs ("X", K) (TVar "X" :-> TVar "X")
+a = TVar "A"
+s1 = (Abs ("x", auto ::@ a) (EVar "x"))
+
+pair = TAbs ("X", K) 
+        (TAbs ("Y", K) 
+          (Abs ("x", TVar "X") 
+            (Abs ("y", TVar "Y") 
+              (TAbs ("R", K) 
+                (Abs ("p", TVar "X" :-> TVar "Y" :-> TVar "R") (EVar "p" :@ EVar "x" :@ EVar "y")
+                  )))))
+
+fst' = TAbs ("X", K)
+        (TAbs ("Y", K)
+          (Abs ("p", Forall ("R", K) ((TVar "X" :-> TVar "Y" :-> TVar "R") :-> TVar "R"))
+            (((EVar "p") :* (TVar "X")) :@ (Abs ("x", TVar "X") (Abs ("y", TVar "Y") (EVar "x"))))))
+
+
+ctxWithNatBool = [TypeA "Nat" K, TypeA "Bool" K, ExprA "5" (TVar "Nat"), ExprA "true" (TVar "Bool")]
+
+s2 = fst' :* (TVar "Nat") :* (TVar "Bool") :@ (pair :* (TVar "Nat") :* (TVar "Bool") :@ (EVar "5") :@ (EVar "true"))
